@@ -1,0 +1,40 @@
+<Window x:Class="ƎPIDGRAPH.Views.MainWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:ƎPIDGRAPH.ViewModels"
+        x:DataType="vm:MainWindowViewModel"
+        Title="ƎPIDGRAPH" Width="1000" Height="700">
+    <Grid RowDefinitions="Auto,*" Margin="10">
+        <!-- Панель управления -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
+            <Button Content="Загрузить BBL" Click="OnLoadBblClick" />
+            <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" />
+            <TextBlock Text="Ось:" VerticalAlignment="Center" Margin="20,0,0,0"/>
+            <ComboBox ItemsSource="{Binding AxisOptions}"
+                      SelectedItem="{Binding SelectedAxis}"
+                      Width="120" />
+        </StackPanel>
+
+        <!-- Область графика -->
+        <Grid Grid.Row="1" Background="White">
+            <Canvas x:Name="PlotCanvas" />
+            
+            <Canvas x:Name="InteractionCanvas" Background="Transparent"
+                    PointerWheelChanged="OnPointerWheelChanged"
+                    PointerPressed="OnPointerPressed"
+                    PointerMoved="OnPointerMoved"
+                    PointerReleased="OnPointerReleased"
+                    PointerExited="OnPointerExited">
+                <!-- Крестовина -->
+                <Line x:Name="CrosshairX" Stroke="Gray" StrokeThickness="0.5" IsVisible="False" />
+                <Line x:Name="CrosshairY" Stroke="Gray" StrokeThickness="0.5" IsVisible="False" />
+                
+                <!-- Всплывающая подсказка -->
+                <Border x:Name="TooltipBorder" Background="#000000" BorderBrush="Gray" BorderThickness="0.5"
+                        CornerRadius="3" Padding="2" IsVisible="False">
+                    <TextBlock x:Name="TooltipText" FontSize="10" />
+                </Border>
+            </Canvas>
+        </Grid>
+    </Grid>
+</Window>
