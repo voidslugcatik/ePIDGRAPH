@@ -33,9 +33,8 @@ namespace ƎPIDGRAPH.Views
         private const double MinZoom = 1;
         private const double MaxZoom = 1000.0;
 
-        private readonly IBrush _gridBrush = new SolidColorBrush(Colors.LightGray);
-        private readonly IBrush _axisBrush = new SolidColorBrush(Colors.Black);
-        private readonly IBrush _textBrush = new SolidColorBrush(Colors.Black);
+        private GpuChart? _plotControl;
+        private Canvas? _interactionCanvas;
 
         // Элементы крестовины
         private Line? _crosshairX, _crosshairY;
@@ -49,6 +48,9 @@ namespace ƎPIDGRAPH.Views
             DataContext = _viewModel;
 
             _viewModel.PlotDataChanged += OnPlotDataChanged;
+
+            _plotControl = this.FindControl<GpuChart>("PlotControl");
+            _interactionCanvas = this.FindControl<Canvas>("InteractionCanvas");
 
             // Находим крестовину по именам
             _crosshairX = this.FindControl<Line>("CrosshairX");
@@ -81,25 +83,7 @@ namespace ƎPIDGRAPH.Views
 
         private void OnPlotDataChanged()
         {
-            ResetZoom();
-            DrawPlot();
-        }
-
-        private void ResetZoom()
-        {
-            _zoomX = 1.0;
-            _zoomY = 1.0;
-            _panX = 0;
-            _panY = 0;
-        }
-
-        private void DrawPlot()
-        {
-            PlotCanvas.Children.Clear();
-            double canvasWidth = PlotCanvas.Bounds.Width;
-            double canvasHeight = PlotCanvas.Bounds.Height;
-            PlotCanvas.Clip = new RectangleGeometry(new Rect(0, 0, canvasWidth, canvasHeight));
-
+            if (_plotControl == null) return;
             var (sessions, tMin, tMax) = _viewModel.GetPlotData();
             if (sessions.Count == 0) return;
 
@@ -110,147 +94,38 @@ namespace ƎPIDGRAPH.Views
                 vMax = Math.Max(vMax, Math.Max(s.Setpoints.Max(), s.Gyros.Max()));
             }
             double vRange = vMax - vMin;
-            vMin -= vRange * 0.05;
-            vMax += vRange * 0.05;
+            _plotControl.VMin = vMin - vRange * 0.05;
+            _plotControl.VMax = vMax + vRange * 0.05;
+            _plotControl.TMin = tMin;
+            _plotControl.TMax = tMax;
+            _plotControl.Sessions = sessions;
 
-            double ScaleX(double t) => ((t - tMin) / (tMax - tMin) * canvasWidth * _zoomX) + _panX;
-            double ScaleY(double v) => ((vMax - v) / (vMax - vMin) * canvasHeight * _zoomY) + _panY;
-
-            DrawGridAndAxes(tMin, tMax, vMin, vMax, canvasWidth, canvasHeight, ScaleX, ScaleY);
-
-            foreach (var session in sessions)
-            {
-                DrawPolyline(session.Times, session.Setpoints, ScaleX, ScaleY, Brushes.Blue, 1.5, LineStyle.Dash);
-                DrawPolyline(session.Times, session.Gyros, ScaleX, ScaleY, Brushes.Red, 1.5, LineStyle.Solid);
-            }
+            ResetZoom();
+            ApplyZoomToControl();
         }
 
-        private void DrawGridAndAxes(double tMin, double tMax, double vMin, double vMax,
-                                     double canvasWidth, double canvasHeight,
-                                     Func<double, double> scaleX, Func<double, double> scaleY)
+        private void ApplyZoomToControl()
         {
-            int xTicks = 10, yTicks = 8;
-            double tStep = (tMax - tMin) / xTicks;
-            double vStep = (vMax - vMin) / yTicks;
-
-            for (int i = 0; i <= yTicks; i++)
-            {
-                double v = vMin + i * vStep;
-                double y = scaleY(v);
-                if (y >= 0 && y <= canvasHeight)
-                {
-                    PlotCanvas.Children.Add(new Line
-                    {
-                        StartPoint = new Point(0, y),
-                        EndPoint = new Point(canvasWidth, y),
-                        Stroke = _gridBrush,
-                        StrokeThickness = 0.5
-                    });
-                    var label = new TextBlock { Text = v.ToString("F0"), FontSize = 10, Foreground = _textBrush };
-                    Canvas.SetLeft(label, 2);
-                    Canvas.SetTop(label, y - 8);
-                    PlotCanvas.Children.Add(label);
-                }
-            }
-
-            for (int i = 0; i <= xTicks; i++)
-            {
-                double t = tMin + i * tStep;
-                double x = scaleX(t);
-                if (x >= 0 && x <= canvasWidth)
-                {
-                    PlotCanvas.Children.Add(new Line
-                    {
-                        StartPoint = new Point(x, 0),
-                        EndPoint = new Point(x, canvasHeight),
-                        Stroke = _gridBrush,
-                        StrokeThickness = 0.5
-                    });
-                    var label = new TextBlock { Text = t.ToString("F1") + "s", FontSize = 10, Foreground = _textBrush };
-                    Canvas.SetLeft(label, x + 2);
-                    Canvas.SetTop(label, canvasHeight - 16);
-                    PlotCanvas.Children.Add(label);
-                }
-            }
-
-            double originY = scaleY(0);
-            if (originY >= 0 && originY <= canvasHeight)
-                PlotCanvas.Children.Add(new Line
-                {
-                    StartPoint = new Point(0, originY),
-                    EndPoint = new Point(canvasWidth, originY),
-                    Stroke = _axisBrush,
-                    StrokeThickness = 1.5
-                });
-
-            double originX = scaleX(0);
-            if (originX >= 0 && originX <= canvasWidth)
-                PlotCanvas.Children.Add(new Line
-                {
-                    StartPoint = new Point(originX, 0),
-                    EndPoint = new Point(originX, canvasHeight),
-                    Stroke = _axisBrush,
-                    StrokeThickness = 1.5
-                });
+            if (_plotControl == null) return;
+            _plotControl.ZoomX = _zoomX;
+            _plotControl.ZoomY = _zoomY;
+            _plotControl.PanX = _panX;
+            _plotControl.PanY = _panY;
+            _plotControl.InvalidateVisual();
         }
 
-        private void DrawPolyline(double[] times, double[] values,
-                          Func<double, double> scaleX, Func<double, double> scaleY,
-                          IBrush brush, double thickness, LineStyle style)
+        private void ResetZoom()
         {
-            var points = new List<Point>();
-            double canvasWidth = PlotCanvas.Bounds.Width;
-            double canvasHeight = PlotCanvas.Bounds.Height;
-
-            // Адаптивный шаг
-            double maxZoom = Math.Max(_zoomX, _zoomY);
-            int targetPoints = (int)(canvasWidth * maxZoom);
-            int step = Math.Max(1, values.Length / Math.Max(1, targetPoints * 2));
-
-            for (int i = 0; i < values.Length; i += step)
-            {
-                double x = scaleX(times[i]);
-                double y = scaleY(values[i]);
-
-                if (x >= -10000 && x <= canvasWidth + 10000 &&
-                    y >= -10000 && y <= canvasHeight + 10000)
-                {
-                    points.Add(new Point(x, y));
-                }
-                else if (points.Count > 1)
-                {
-                    PlotCanvas.Children.Add(new Polyline
-                    {
-                        Stroke = brush,
-                        StrokeThickness = thickness,
-                        StrokeDashArray = style == LineStyle.Dash ? new AvaloniaList<double> { 4, 2 } : null,
-                        Points = new AvaloniaList<Point>(points)
-                    });
-                    points.Clear();
-                }
-            }
-
-            if (points.Count > 1)
-            {
-                PlotCanvas.Children.Add(new Polyline
-                {
-                    Stroke = brush,
-                    StrokeThickness = thickness,
-                    StrokeDashArray = style == LineStyle.Dash ? new AvaloniaList<double> { 4, 2 } : null,
-                    Points = new AvaloniaList<Point>(points)
-                });
-            }
-        }
-
-        private void OnPlotCanvasSizeChanged(object? sender, SizeChangedEventArgs e)
-        {
-            PlotCanvas.SizeChanged -= OnPlotCanvasSizeChanged;
-            DrawPlot();
+            _zoomX = 1.0;
+            _zoomY = 1.0;
+            _panX = 0;
+            _panY = 0;
         }
 
         private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
         {
-            var mousePos = e.GetPosition(PlotCanvas);
+            if (_interactionCanvas == null) return;
+            var mousePos = e.GetPosition(_interactionCanvas);
             double zoomDelta = e.Delta.Y > 0 ? ZoomSpeed : 1.0 / ZoomSpeed;
             var modifiers = e.KeyModifiers;
 
@@ -276,13 +151,13 @@ namespace ƎPIDGRAPH.Views
                 _zoomY = newZoomY;
             }
 
-            DrawPlot();
+            ApplyZoomToControl();
         }
 
         private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
         {
-            var point = e.GetCurrentPoint(PlotCanvas);
-            var mousePos = e.GetPosition(PlotCanvas);
+            var point = e.GetCurrentPoint(_interactionCanvas);
+            var mousePos = e.GetPosition(_interactionCanvas);
 
             if (point.Properties.IsRightButtonPressed)
             {
@@ -297,7 +172,7 @@ namespace ƎPIDGRAPH.Views
                 };
                 Canvas.SetLeft(_zoomRectangle, mousePos.X);
                 Canvas.SetTop(_zoomRectangle, mousePos.Y);
-                PlotCanvas.Children.Add(_zoomRectangle);
+                _interactionCanvas.Children.Add(_zoomRectangle);
             }
             else if (point.Properties.IsLeftButtonPressed)
             {
@@ -308,7 +183,7 @@ namespace ƎPIDGRAPH.Views
 
         private void OnPointerMoved(object? sender, PointerEventArgs e)
         {
-            var mousePos = e.GetPosition(PlotCanvas);
+            var mousePos = e.GetPosition(_interactionCanvas);
 
             if (_isZoomSelecting && _zoomRectangle != null)
             {
@@ -331,7 +206,6 @@ namespace ƎPIDGRAPH.Views
                 _panX += deltaX;
                 _panY += deltaY;
                 _lastMousePosition = mousePos;
-                DrawPlot();
                 return;
             }
 
@@ -343,8 +217,8 @@ namespace ƎPIDGRAPH.Views
             if (_crosshairX == null || _crosshairY == null || _tooltipBorder == null || _tooltipText == null)
                 return;
 
-            double canvasWidth = PlotCanvas.Bounds.Width;
-            double canvasHeight = PlotCanvas.Bounds.Height;
+            double canvasWidth = _interactionCanvas.Bounds.Width;
+            double canvasHeight = _interactionCanvas.Bounds.Height;
             if (canvasWidth <= 0 || canvasHeight <= 0)
             {
                 _crosshairX.IsVisible = false;
@@ -473,14 +347,14 @@ namespace ƎPIDGRAPH.Views
 
         private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
         {
-            var mousePos = e.GetPosition(PlotCanvas);
+            var mousePos = e.GetPosition(_interactionCanvas);
 
             if (_isZoomSelecting)
             {
                 _isZoomSelecting = false;
                 if (_zoomRectangle != null)
                 {
-                    PlotCanvas.Children.Remove(_zoomRectangle);
+                    _interactionCanvas.Children.Remove(_zoomRectangle);
 
                     double width = Math.Abs(mousePos.X - _zoomStartPoint.X);
                     double height = Math.Abs(mousePos.Y - _zoomStartPoint.Y);
@@ -489,8 +363,8 @@ namespace ƎPIDGRAPH.Views
                     {
                         double x = Math.Min(_zoomStartPoint.X, mousePos.X);
                         double y = Math.Min(_zoomStartPoint.Y, mousePos.Y);
-                        double canvasWidth = PlotCanvas.Bounds.Width;
-                        double canvasHeight = PlotCanvas.Bounds.Height;
+                        double canvasWidth = _interactionCanvas.Bounds.Width;
+                        double canvasHeight = _interactionCanvas.Bounds.Height;
 
                         double newZoomX = canvasWidth / width;
                         double newZoomY = canvasHeight / height;
@@ -508,7 +382,6 @@ namespace ƎPIDGRAPH.Views
                     }
 
                     _zoomRectangle = null;
-                    DrawPlot();
                 }
             }
             else if (_isPanning)
