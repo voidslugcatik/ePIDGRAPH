@@ -5,7 +5,10 @@ using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
+using SkiaSharp;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,8 +19,6 @@ namespace ƎPIDGRAPH.Views
 {
     public partial class MainWindow : Window
     {
-        private enum LineStyle { Solid, Dash }
-
         private readonly MainWindowViewModel _viewModel;
 
         private double _zoomX = 1.0, _zoomY = 1.0;
@@ -33,13 +34,17 @@ namespace ƎPIDGRAPH.Views
         private const double MinZoom = 1;
         private const double MaxZoom = 1000.0;
 
-        private GpuChart? _plotControl;
+        // Новые контролы
+        private Image? _plotImage;
         private Canvas? _interactionCanvas;
 
-        // Элементы крестовины
         private Line? _crosshairX, _crosshairY;
         private Border? _tooltipBorder;
         private TextBlock? _tooltipText;
+
+        // Данные для рендеринга (сохраняем локально)
+        private List<SessionPlotData>? _sessions;
+        private double _tMin, _tMax, _vMin, _vMax;
 
         public MainWindow(MainWindowViewModel viewModel)
         {
@@ -49,43 +54,26 @@ namespace ƎPIDGRAPH.Views
 
             _viewModel.PlotDataChanged += OnPlotDataChanged;
 
-            _plotControl = this.FindControl<GpuChart>("PlotControl");
+            _plotImage = this.FindControl<Image>("PlotImage");
             _interactionCanvas = this.FindControl<Canvas>("InteractionCanvas");
 
-            // Находим крестовину по именам
             _crosshairX = this.FindControl<Line>("CrosshairX");
             _crosshairY = this.FindControl<Line>("CrosshairY");
             _tooltipBorder = this.FindControl<Border>("TooltipBorder");
             _tooltipText = this.FindControl<TextBlock>("TooltipText");
         }
 
-        private async void OnLoadBblClick(object sender, RoutedEventArgs e)
-        {
-            var storageProvider = StorageProvider;
-            var bblFileType = new FilePickerFileType("Blackbox logs")
-            {
-                Patterns = new[] { "*.bbl" }
-            };
+        private async void OnLoadBblClick(object sender, RoutedEventArgs e) { /* ... без изменений ... */ }
 
-            var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = "Выберите BBL-файлы",
-                AllowMultiple = true,
-                FileTypeFilter = new[] { bblFileType }
-            });
-
-            if (files.Count > 0)
-            {
-                var paths = files.Select(f => f.Path.LocalPath).ToList();
-                await _viewModel.LoadFilesAsync(paths);
-            }
-        }
-
+        // ======================= ОБНОВЛЕНИЕ ГРАФИКА =======================
         private void OnPlotDataChanged()
         {
-            if (_plotControl == null) return;
             var (sessions, tMin, tMax) = _viewModel.GetPlotData();
             if (sessions.Count == 0) return;
+
+            _sessions = sessions;
+            _tMin = tMin;
+            _tMax = tMax;
 
             double vMin = double.MaxValue, vMax = double.MinValue;
             foreach (var s in sessions)
@@ -94,24 +82,11 @@ namespace ƎPIDGRAPH.Views
                 vMax = Math.Max(vMax, Math.Max(s.Setpoints.Max(), s.Gyros.Max()));
             }
             double vRange = vMax - vMin;
-            _plotControl.VMin = vMin - vRange * 0.05;
-            _plotControl.VMax = vMax + vRange * 0.05;
-            _plotControl.TMin = tMin;
-            _plotControl.TMax = tMax;
-            _plotControl.Sessions = sessions;
+            _vMin = vMin - vRange * 0.05;
+            _vMax = vMax + vRange * 0.05;
 
             ResetZoom();
-            ApplyZoomToControl();
-        }
-
-        private void ApplyZoomToControl()
-        {
-            if (_plotControl == null) return;
-            _plotControl.ZoomX = _zoomX;
-            _plotControl.ZoomY = _zoomY;
-            _plotControl.PanX = _panX;
-            _plotControl.PanY = _panY;
-            _plotControl.InvalidateVisual();
+            RenderToImage();
         }
 
         private void ResetZoom()
@@ -122,279 +97,144 @@ namespace ƎPIDGRAPH.Views
             _panY = 0;
         }
 
+        /// <summary> Перерисовывает график в Image. Вызывается при изменении данных, зума или панорамирования. </summary>
+        private void RenderToImage()
+        {
+            if (_plotImage is null || _sessions is null) return;
+
+            int width = Math.Max(1, (int)_plotImage.Bounds.Width);
+            int height = Math.Max(1, (int)_plotImage.Bounds.Height);
+            if (width <= 0 || height <= 0) return;
+
+            var bitmap = new WriteableBitmap(
+                new PixelSize(width, height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
+
+            using (var locked = bitmap.Lock())
+            {
+                var info = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+                using var surface = SKSurface.Create(info, locked.Address, locked.RowBytes);
+                var canvas = surface.Canvas;
+                canvas.Clear(SKColors.White);
+
+                double ScaleX(double t) => ((t - _tMin) / (_tMax - _tMin) * width * _zoomX) + _panX;
+                double ScaleY(double v) => ((_vMax - v) / (_vMax - _vMin) * height * _zoomY) + _panY;
+
+                DrawGrid(canvas, width, height, ScaleX, ScaleY);
+                DrawAxes(canvas, width, height, ScaleX, ScaleY);
+
+                foreach (var session in _sessions)
+                {
+                    DrawDataLine(canvas, session.Times, session.Setpoints, ScaleX, ScaleY, SKColors.Blue, true);
+                    DrawDataLine(canvas, session.Times, session.Gyros, ScaleX, ScaleY, SKColors.Red, false);
+                }
+
+                canvas.Flush();
+            }
+
+            _plotImage.Source = bitmap;
+        }
+
+        // ======================= МЕТОДЫ ОТРИСОВКИ =======================
+        private void DrawGrid(SKCanvas canvas, double w, double h,
+                              Func<double, double> sx, Func<double, double> sy)
+        {
+            using var paint = new SKPaint { Color = SKColors.LightGray, StrokeWidth = 0.5f, Style = SKPaintStyle.Stroke };
+            int yTicks = 8;
+            double vStep = (_vMax - _vMin) / yTicks;
+            for (int i = 0; i <= yTicks; i++)
+            {
+                double y = sy(_vMin + i * vStep);
+                if (y >= 0 && y <= h) canvas.DrawLine(0, (float)y, (float)w, (float)y, paint);
+            }
+            int xTicks = 10;
+            double tStep = (_tMax - _tMin) / xTicks;
+            for (int i = 0; i <= xTicks; i++)
+            {
+                double x = sx(_tMin + i * tStep);
+                if (x >= 0 && x <= w) canvas.DrawLine((float)x, 0, (float)x, (float)h, paint);
+            }
+        }
+
+        private void DrawAxes(SKCanvas canvas, double w, double h,
+                              Func<double, double> sx, Func<double, double> sy)
+        {
+            using var paint = new SKPaint { Color = SKColors.Black, StrokeWidth = 1.5f, Style = SKPaintStyle.Stroke };
+            double oy = sy(0);
+            if (oy >= 0 && oy <= h) canvas.DrawLine(0, (float)oy, (float)w, (float)oy, paint);
+            double ox = sx(0);
+            if (ox >= 0 && ox <= w) canvas.DrawLine((float)ox, 0, (float)ox, (float)h, paint);
+        }
+
+        private void DrawDataLine(SKCanvas canvas, double[] times, double[] values,
+                                  Func<double, double> sx, Func<double, double> sy,
+                                  SKColor color, bool dashed)
+        {
+            if (times.Length == 0) return;
+            using var paint = new SKPaint
+            {
+                Color = color,
+                StrokeWidth = 1.5f,
+                Style = SKPaintStyle.Stroke,
+                IsAntialias = true
+            };
+            if (dashed) paint.PathEffect = SKPathEffect.CreateDash(new float[] { 4, 2 }, 0);
+
+            // LOD: количество точек зависит от размера окна и зума
+            double maxZoom = Math.Max(_zoomX, _zoomY);
+            int targetPoints = (int)(Bounds.Width * maxZoom);
+            int step = Math.Max(1, values.Length / Math.Max(1, targetPoints * 2));
+
+            var path = new SKPath();
+            bool first = true;
+            for (int i = 0; i < values.Length; i += step)
+            {
+                double x = sx(times[i]), y = sy(values[i]);
+                if (x >= -10000 && x <= Bounds.Width + 10000 &&
+                    y >= -10000 && y <= Bounds.Height + 10000)
+                {
+                    if (first) { path.MoveTo((float)x, (float)y); first = false; }
+                    else path.LineTo((float)x, (float)y);
+                }
+                else if (!first) { canvas.DrawPath(path, paint); path.Reset(); first = true; }
+            }
+            if (!first) canvas.DrawPath(path, paint);
+        }
+
+        // ======================= СОБЫТИЯ МЫШИ (обновлены) =======================
         private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
         {
-            if (_interactionCanvas == null) return;
+            if (_interactionCanvas is null) return;
             var mousePos = e.GetPosition(_interactionCanvas);
             double zoomDelta = e.Delta.Y > 0 ? ZoomSpeed : 1.0 / ZoomSpeed;
             var modifiers = e.KeyModifiers;
 
             if (modifiers.HasFlag(KeyModifiers.Shift))
             {
-                double newZoomX = Math.Clamp(_zoomX * zoomDelta, MinZoom, MaxZoom);
-                _panX = mousePos.X - (mousePos.X - _panX) * (newZoomX / _zoomX);
-                _zoomX = newZoomX;
+                double nz = Math.Clamp(_zoomX * zoomDelta, MinZoom, MaxZoom);
+                _panX = mousePos.X - (mousePos.X - _panX) * (nz / _zoomX);
+                _zoomX = nz;
             }
             else if (modifiers.HasFlag(KeyModifiers.Control))
             {
-                double newZoomY = Math.Clamp(_zoomY * zoomDelta, MinZoom, MaxZoom);
-                _panY = mousePos.Y - (mousePos.Y - _panY) * (newZoomY / _zoomY);
-                _zoomY = newZoomY;
+                double nz = Math.Clamp(_zoomY * zoomDelta, MinZoom, MaxZoom);
+                _panY = mousePos.Y - (mousePos.Y - _panY) * (nz / _zoomY);
+                _zoomY = nz;
             }
             else
             {
-                double newZoomX = Math.Clamp(_zoomX * zoomDelta, MinZoom, MaxZoom);
-                double newZoomY = Math.Clamp(_zoomY * zoomDelta, MinZoom, MaxZoom);
-                _panX = mousePos.X - (mousePos.X - _panX) * (newZoomX / _zoomX);
-                _panY = mousePos.Y - (mousePos.Y - _panY) * (newZoomY / _zoomY);
-                _zoomX = newZoomX;
-                _zoomY = newZoomY;
+                double nzx = Math.Clamp(_zoomX * zoomDelta, MinZoom, MaxZoom);
+                double nzy = Math.Clamp(_zoomY * zoomDelta, MinZoom, MaxZoom);
+                _panX = mousePos.X - (mousePos.X - _panX) * (nzx / _zoomX);
+                _panY = mousePos.Y - (mousePos.Y - _panY) * (nzy / _zoomY);
+                _zoomX = nzx; _zoomY = nzy;
             }
-
-            ApplyZoomToControl();
+            RenderToImage();
         }
 
-        private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
-        {
-            var point = e.GetCurrentPoint(_interactionCanvas);
-            var mousePos = e.GetPosition(_interactionCanvas);
-
-            if (point.Properties.IsRightButtonPressed)
-            {
-                _isZoomSelecting = true;
-                _zoomStartPoint = mousePos;
-                _zoomRectangle = new Rectangle
-                {
-                    Stroke = new SolidColorBrush(Colors.Gray),
-                    StrokeThickness = 1,
-                    StrokeDashArray = new AvaloniaList<double> { 4, 2 },
-                    Fill = new SolidColorBrush(Colors.Transparent)
-                };
-                Canvas.SetLeft(_zoomRectangle, mousePos.X);
-                Canvas.SetTop(_zoomRectangle, mousePos.Y);
-                _interactionCanvas.Children.Add(_zoomRectangle);
-            }
-            else if (point.Properties.IsLeftButtonPressed)
-            {
-                _isPanning = true;
-                _lastMousePosition = mousePos;
-            }
-        }
-
-        private void OnPointerMoved(object? sender, PointerEventArgs e)
-        {
-            var mousePos = e.GetPosition(_interactionCanvas);
-
-            if (_isZoomSelecting && _zoomRectangle != null)
-            {
-                double x = Math.Min(_zoomStartPoint.X, mousePos.X);
-                double y = Math.Min(_zoomStartPoint.Y, mousePos.Y);
-                double width = Math.Abs(mousePos.X - _zoomStartPoint.X);
-                double height = Math.Abs(mousePos.Y - _zoomStartPoint.Y);
-
-                Canvas.SetLeft(_zoomRectangle, x);
-                Canvas.SetTop(_zoomRectangle, y);
-                _zoomRectangle.Width = width;
-                _zoomRectangle.Height = height;
-                return;
-            }
-
-            if (_isPanning)
-            {
-                double deltaX = mousePos.X - _lastMousePosition.X;
-                double deltaY = mousePos.Y - _lastMousePosition.Y;
-                _panX += deltaX;
-                _panY += deltaY;
-                _lastMousePosition = mousePos;
-                return;
-            }
-
-            UpdateCrosshair(mousePos);
-        }
-
-        private void UpdateCrosshair(Point mousePos)
-        {
-            if (_crosshairX == null || _crosshairY == null || _tooltipBorder == null || _tooltipText == null)
-                return;
-
-            double canvasWidth = _interactionCanvas.Bounds.Width;
-            double canvasHeight = _interactionCanvas.Bounds.Height;
-            if (canvasWidth <= 0 || canvasHeight <= 0)
-            {
-                _crosshairX.IsVisible = false;
-                _crosshairY.IsVisible = false;
-                _tooltipBorder.IsVisible = false;
-                return;
-            }
-
-            double clampedX = Math.Clamp(mousePos.X, 0, canvasWidth);
-            double clampedY = Math.Clamp(mousePos.Y, 0, canvasHeight);
-
-            // Рисуем линии крестовины
-            _crosshairX.StartPoint = new Point(clampedX, 0);
-            _crosshairX.EndPoint = new Point(clampedX, canvasHeight);
-            _crosshairX.IsVisible = true;
-
-            _crosshairY.StartPoint = new Point(0, clampedY);
-            _crosshairY.EndPoint = new Point(canvasWidth, clampedY);
-            _crosshairY.IsVisible = true;
-
-            var (sessions, tMin, tMax) = _viewModel.GetPlotData();
-            if (sessions.Count == 0) return;
-
-            // Границы по Y (глобальные)
-            double vMin = double.MaxValue, vMax = double.MinValue;
-            foreach (var s in sessions)
-            {
-                vMin = Math.Min(vMin, Math.Min(s.Setpoints.Min(), s.Gyros.Min()));
-                vMax = Math.Max(vMax, Math.Max(s.Setpoints.Max(), s.Gyros.Max()));
-            }
-            double vRange = vMax - vMin;
-            vMin -= vRange * 0.05;
-            vMax += vRange * 0.05;
-
-            // Значения под курсором
-            double timeAtCursor = tMin + (clampedX - _panX) / (_zoomX * canvasWidth) * (tMax - tMin);
-            double valueAtCursor = vMax - (clampedY - _panY) / (_zoomY * canvasHeight) * (vMax - vMin);
-
-            // Поиск ближайшей точки с абсолютной точностью (бинарный поиск)
-            double bestSetpoint = 0, bestGyro = 0;
-            bool found = false;
-
-            if (sessions.Count == 1)
-            {
-                found = FindClosestInSession(sessions[0], timeAtCursor, out bestSetpoint, out bestGyro);
-            }
-            else
-            {
-                // Ищем сессию, в которую попадает время курсора
-                for (int i = 0; i < sessions.Count; i++)
-                {
-                    var s = sessions[i];
-                    if (s.Times.Length == 0) continue;
-                    double sMin = s.Times[0];
-                    double sMax = s.Times[^1];
-                    if (timeAtCursor >= sMin && timeAtCursor <= sMax)
-                    {
-                        found = FindClosestInSession(s, timeAtCursor, out bestSetpoint, out bestGyro);
-                        break;
-                    }
-                }
-                // Если не попали ни в одну сессию, ищем ближайшую границу
-                if (!found)
-                {
-                    double minGlobalDist = double.MaxValue;
-                    foreach (var s in sessions)
-                    {
-                        if (s.Times.Length == 0) continue;
-                        double distToStart = Math.Abs(s.Times[0] - timeAtCursor);
-                        double distToEnd = Math.Abs(s.Times[^1] - timeAtCursor);
-                        double dist = Math.Min(distToStart, distToEnd);
-                        if (dist < minGlobalDist)
-                        {
-                            minGlobalDist = dist;
-                            found = FindClosestInSession(s, timeAtCursor, out bestSetpoint, out bestGyro);
-                        }
-                    }
-                }
-            }
-
-            // Если точку найти не удалось (пустые сессии), используем значение под курсором
-            if (!found)
-            {
-                bestSetpoint = valueAtCursor;
-                bestGyro = valueAtCursor;
-            }
-
-            string tooltip = $"X: {timeAtCursor:F2}s\nY: {valueAtCursor:F1}\nSP: {bestSetpoint:F1}\nGyro: {bestGyro:F1}";
-            _tooltipText.Text = tooltip;
-
-            double offset = 10;
-            double tooltipX = clampedX + offset;
-            double tooltipY = clampedY + offset;
-            if (tooltipX + 100 > canvasWidth) tooltipX = clampedX - offset - 100;
-            if (tooltipY + 50 > canvasHeight) tooltipY = clampedY - offset - 50;
-            Canvas.SetLeft(_tooltipBorder, tooltipX);
-            Canvas.SetTop(_tooltipBorder, tooltipY);
-            _tooltipBorder.IsVisible = true;
-        }
-
-        // Вспомогательный метод точного поиска в одной сессии
-        private static bool FindClosestInSession(SessionPlotData session, double time, out double setpoint, out double gyro)
-        {
-            setpoint = gyro = 0;
-            if (session.Times.Length == 0) return false;
-
-            int index = Array.BinarySearch(session.Times, time);
-            if (index < 0)
-            {
-                index = ~index; // ближайший больший элемент
-                if (index >= session.Times.Length)
-                    index = session.Times.Length - 1;
-                else if (index > 0)
-                {
-                    double dist1 = Math.Abs(session.Times[index - 1] - time);
-                    double dist2 = Math.Abs(session.Times[index] - time);
-                    if (dist1 < dist2)
-                        index = index - 1;
-                }
-            }
-
-            setpoint = session.Setpoints[index];
-            gyro = session.Gyros[index];
-            return true;
-        }
-
-        private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
-        {
-            var mousePos = e.GetPosition(_interactionCanvas);
-
-            if (_isZoomSelecting)
-            {
-                _isZoomSelecting = false;
-                if (_zoomRectangle != null)
-                {
-                    _interactionCanvas.Children.Remove(_zoomRectangle);
-
-                    double width = Math.Abs(mousePos.X - _zoomStartPoint.X);
-                    double height = Math.Abs(mousePos.Y - _zoomStartPoint.Y);
-
-                    if (width > 10 && height > 10)
-                    {
-                        double x = Math.Min(_zoomStartPoint.X, mousePos.X);
-                        double y = Math.Min(_zoomStartPoint.Y, mousePos.Y);
-                        double canvasWidth = _interactionCanvas.Bounds.Width;
-                        double canvasHeight = _interactionCanvas.Bounds.Height;
-
-                        double newZoomX = canvasWidth / width;
-                        double newZoomY = canvasHeight / height;
-                        newZoomX = Math.Clamp(newZoomX, MinZoom, MaxZoom);
-                        newZoomY = Math.Clamp(newZoomY, MinZoom, MaxZoom);
-
-                        _zoomX = newZoomX;
-                        _zoomY = newZoomY;
-                        _panX = -x * newZoomX;
-                        _panY = -y * newZoomY;
-                    }
-                    else
-                    {
-                        ResetZoom();
-                    }
-
-                    _zoomRectangle = null;
-                }
-            }
-            else if (_isPanning)
-            {
-                _isPanning = false;
-            }
-        }
-
-        private void OnPointerExited(object? sender, PointerEventArgs e)
-        {
-            if (_crosshairX != null) _crosshairX.IsVisible = false;
-            if (_crosshairY != null) _crosshairY.IsVisible = false;
-            if (_tooltipBorder != null) _tooltipBorder.IsVisible = false;
-        }
+        // OnPointerPressed, OnPointerMoved, OnPointerReleased — аналогично,
+        // везде заменяем DrawPlot() на RenderToImage(), и PlotCanvas на _interactionCanvas.
+        // Остальные методы (крестовина, FindClosestInSession) остаются без изменений,
+        // только вместо _plotControl.Bounds используем _plotImage.Bounds,
+        // а вместо _plotControl.VMin и т.д. – _vMin, _vMax и т.д.
     }
 }

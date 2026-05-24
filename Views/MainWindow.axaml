@@ -16,19 +16,19 @@
                       Width="120" />
         </StackPanel>
 
-        <!-- Область графика: GpuChart + прозрачный оверлей для крестовины -->
+        <!-- Область графика -->
         <Grid Grid.Row="1" 
               PointerWheelChanged="OnPointerWheelChanged"
               PointerPressed="OnPointerPressed"
               PointerMoved="OnPointerMoved"
               PointerReleased="OnPointerReleased"
               PointerExited="OnPointerExited">
-            <local:GpuChart x:Name="PlotControl" />
+            <!-- Раньше был GpuChart, теперь Image -->
+            <Image x:Name="PlotImage" Stretch="None" />
             <Canvas x:Name="InteractionCanvas" IsHitTestVisible="False">
-                <!-- Элементы крестовины и тултипа -->
                 <Line x:Name="CrosshairX" Stroke="Gray" StrokeThickness="1" IsVisible="False" />
                 <Line x:Name="CrosshairY" Stroke="Gray" StrokeThickness="1" IsVisible="False" />
-                <Border x:Name="TooltipBorder" Background="Black" 
+                <Border x:Name="TooltipBorder" Background="White" 
                         BorderBrush="Black" BorderThickness="1"
                         Padding="4" IsVisible="False" CornerRadius="2">
                     <TextBlock x:Name="TooltipText" FontSize="10" />

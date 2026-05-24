@@ -33,6 +33,7 @@ namespace ƎPIDGRAPH.Views
             int width = Math.Max(1, (int)Bounds.Width);
             int height = Math.Max(1, (int)Bounds.Height);
 
+            // Создаём/пересоздаём битмап и поверхность при изменении размеров
             if (_bitmap is null || _bitmap.PixelSize.Width != width || _bitmap.PixelSize.Height != height)
             {
                 _surface?.Dispose();
