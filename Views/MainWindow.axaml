@@ -4,7 +4,7 @@
         xmlns:vm="clr-namespace:ƎPIDGRAPH.ViewModels"
         xmlns:local="clr-namespace:ƎPIDGRAPH.Views"
         x:DataType="vm:MainWindowViewModel"
-        Title="ƎPIDGRAPH" Width="1000" Height="700">
+        Title="ƎPIDGRAPH" Width="1280" Height="720">
     <Grid RowDefinitions="Auto,*" Margin="10">
         <!-- Панель управления -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">

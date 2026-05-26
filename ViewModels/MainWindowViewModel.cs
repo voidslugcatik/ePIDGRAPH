@@ -57,25 +57,22 @@ namespace ƎPIDGRAPH.ViewModels
             StatusText = "Загрузка...";
             try
             {
-                // 1. Загружаем все сессии через сервис
                 var sessions = await _bbFileService.LoadMultipleAsync(filePaths);
 
-                // 2. Подготовка структур для сессий и общей статистики
                 _sessions.Clear();
-                double currentOffset = 0.0;
-                const double gapBetweenSessions = 2.0; // секунды
+                double globalMin = double.MaxValue, globalMax = double.MinValue;
                 var allRecords = new List<FlightRecord>();
 
                 foreach (var session in sessions)
                 {
                     if (session.Records.Count == 0) continue;
 
-                    // Вычисляем длительность сессии в микросекундах
                     double minTime = session.Records.Min(r => r.Time);
                     double maxTime = session.Records.Max(r => r.Time);
-                    double durationSec = (maxTime - minTime) / 1_000_000.0;
+                    // Общие глобальные границы по всем сессиям (в микросекундах)
+                    globalMin = Math.Min(globalMin, minTime);
+                    globalMax = Math.Max(globalMax, maxTime);
 
-                    // Массивы для одной сессии
                     var times = new double[session.Records.Count];
                     var setpoints = new double[session.Records.Count];
                     var gyros = new double[session.Records.Count];
@@ -83,8 +80,8 @@ namespace ƎPIDGRAPH.ViewModels
                     for (int i = 0; i < session.Records.Count; i++)
                     {
                         var r = session.Records[i];
-                        // Нормализованное время: начинается с 0 + смещение currentOffset
-                        times[i] = currentOffset + (r.Time - minTime) / 1_000_000.0;
+                        // Время храним как есть (в микросекундах), потом преобразуем в секунды при отрисовке
+                        times[i] = r.Time;
                         setpoints[i] = GetSetpointForAxis(r);
                         gyros[i] = GetGyroForAxis(r);
                         allRecords.Add(r);
@@ -96,19 +93,16 @@ namespace ƎPIDGRAPH.ViewModels
                         Setpoints = setpoints,
                         Gyros = gyros
                     });
-
-                    // Смещаем следующую сессию
-                    currentOffset += durationSec + gapBetweenSessions;
                 }
 
-                // 3. Глобальные границы времени (для осей X)
+                // Глобальные границы времени в секундах
                 if (_sessions.Count > 0)
                 {
-                    _globalTMin = 0.0;
-                    _globalTMax = currentOffset - gapBetweenSessions; // последний разрыв не нужен
+                    _globalTMin = globalMin / 1_000_000.0;
+                    _globalTMax = globalMax / 1_000_000.0;
                 }
 
-                // 4. Сохраняем общий массив для обратной совместимости (если где-то ещё используется)
+                // Обратная совместимость (если нужно)
                 _times = allRecords.Select(r => r.Time / 1e6).ToArray();
                 _setpointRoll = allRecords.Select(r => r.SetpointRoll).ToArray();
                 _gyroRoll = allRecords.Select(r => r.GyroRoll).ToArray();
