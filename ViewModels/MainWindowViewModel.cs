@@ -111,12 +111,15 @@ namespace ƎPIDGRAPH.ViewModels
                 _setpointYaw = allRecords.Select(r => r.SetpointYaw).ToArray();
                 _gyroYaw = allRecords.Select(r => r.GyroYaw).ToArray();
 
-                StatusText = $"Загружено {allRecords.Count} записей из {sessions.Count} сессий";
+                int drawnSessions = _sessions.Count;   // сколько сессий реально пойдёт на график
+                StatusText = drawnSessions > 0
+                    ? $"Загружено {allRecords.Count} записей из {drawnSessions} сессий"
+                    : "Нет данных для отображения";
                 PlotDataChanged?.Invoke();
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Ошибка загрузки: {ex.Message}");
+                Debug.WriteLine($"Ошибка загрузки: {ex}");
                 StatusText = "Ошибка загрузки";
             }
         }

@@ -16,19 +16,15 @@ namespace ƎPIDGRAPH.Services
             var allSessions = new List<LogFile>();
             foreach (var bblPath in bblPaths)
             {
-                // Создаём временную папку в %TEMP% с ASCII‑именем
                 string tempWorkDir = Path.Combine(Path.GetTempPath(), "ePIDGRAPH", Path.GetRandomFileName());
                 Directory.CreateDirectory(tempWorkDir);
                 try
                 {
-                    // Копируем .bbl во временную папку
                     string tempBblPath = Path.Combine(tempWorkDir, Path.GetFileName(bblPath));
                     File.Copy(bblPath, tempBblPath, overwrite: true);
 
-                    // Запускаем декодер (он создаст CSV во временной папке)
                     await RunBlackboxDecode(tempBblPath);
 
-                    // Находим и загружаем все CSV из временной папки
                     var csvFiles = FindAllCsvFiles(tempWorkDir, Path.GetFileNameWithoutExtension(tempBblPath));
                     foreach (var csvFile in csvFiles)
                     {
@@ -37,7 +33,6 @@ namespace ƎPIDGRAPH.Services
                 }
                 finally
                 {
-                    // Удаляем временную папку со всем содержимым
                     if (Directory.Exists(tempWorkDir))
                         Directory.Delete(tempWorkDir, true);
                 }
@@ -65,7 +60,7 @@ namespace ƎPIDGRAPH.Services
             var psi = new ProcessStartInfo
             {
                 FileName = toolPath,
-                Arguments = $"\"{bblPath}\"",   // <-- просто путь, без --index
+                Arguments = $"\"{bblPath}\"",
                 WorkingDirectory = bblDir,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -87,11 +82,6 @@ namespace ƎPIDGRAPH.Services
 
             if (process.ExitCode != 0)
                 throw new Exception($"blackbox_decode завершился с ошибкой (код {process.ExitCode}). Stderr: {stdErr}");
-
-            // Логируем содержимое папки с BBL после запуска
-            Debug.WriteLine($"[BBLService] Файлы в {bblDir}:");
-            foreach (var f in Directory.GetFiles(bblDir))
-                Debug.WriteLine($"  {f}");
         }
 
         private LogFile ParseCsvFile(string csvPath, string originalBblPath)
@@ -151,11 +141,7 @@ namespace ƎPIDGRAPH.Services
                 }
             }
 
-            return new LogFile
-            {
-                FilePath = originalBblPath,
-                Records = records
-            };
+            return new LogFile { FilePath = originalBblPath, Records = records };
         }
 
         private string? FindTool(string toolName)

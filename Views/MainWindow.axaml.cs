@@ -21,7 +21,6 @@ namespace ƎPIDGRAPH.Views
     {
         private readonly MainWindowViewModel _viewModel;
 
-        // Зум и панорамирование
         private double _zoomX = 1.0, _zoomY = 1.0;
         private double _panX, _panY;
         private bool _isPanning;
@@ -34,7 +33,6 @@ namespace ƎPIDGRAPH.Views
         private const double MinZoom = 1.0;
         private const double MaxZoom = 1000.0;
 
-        // Контролы
         private Grid? _plotGrid;
         private Image? _plotImage;
         private Canvas? _interactionCanvas;
@@ -42,28 +40,29 @@ namespace ƎPIDGRAPH.Views
         private Border? _tooltipBorder;
         private TextBlock? _tooltipText;
 
-        // Данные графика
         private List<SessionPlotData>? _sessions;
         private double _tMin, _tMax, _vMin, _vMax;
         private bool _hasData;
 
-        // Кэшированные кисти Skia
         private SKPaint? _gridPaint;
         private SKPaint? _axisPaint;
         private SKPaint? _textPaint;
+        private SKFont? _textFont;
         private SKPathEffect? _dashEffect;
 
-        // Палитра сессий
+        // Расширенная палитра на 12 цветов + названия для тултипа
         private static readonly SKColor[] SessionColors =
         {
-            SKColors.Blue,
-            SKColors.Red,
-            SKColors.Green,
-            SKColors.Orange,
-            SKColors.Purple,
-            SKColors.Brown,
-            SKColors.Magenta,
-            SKColors.Cyan
+            SKColors.Blue,      SKColors.Red,       SKColors.Green,
+            SKColors.Orange,    SKColors.Purple,    SKColors.Brown,
+            SKColors.Magenta,   SKColors.Cyan,      SKColors.DarkGreen,
+            SKColors.DeepPink,  SKColors.Olive,     SKColors.Teal
+        };
+
+        private static readonly string[] ColorShortNames =
+        {
+            "син", "крс", "зел", "орж", "фиол", "кор",
+            "мадж", "гол", "т-зел", "роз", "олив", "бирюз"
         };
 
         public MainWindow(MainWindowViewModel viewModel)
@@ -83,7 +82,6 @@ namespace ƎPIDGRAPH.Views
             _tooltipBorder = this.FindControl<Border>("TooltipBorder");
             _tooltipText = this.FindControl<TextBlock>("TooltipText");
 
-            // Инициализируем кэшированные объекты
             _gridPaint = new SKPaint
             {
                 Color = SKColors.LightGray,
@@ -96,13 +94,8 @@ namespace ƎPIDGRAPH.Views
                 StrokeWidth = 1.5f,
                 Style = SKPaintStyle.Stroke
             };
-            _textPaint = new SKPaint
-            {
-                Color = SKColors.Black,
-                TextSize = 11,
-                IsAntialias = true,
-                Typeface = SKTypeface.FromFamilyName("Arial")
-            };
+            _textPaint = new SKPaint { Color = SKColors.Black, IsAntialias = true };
+            _textFont = new SKFont(SKTypeface.FromFamilyName("Arial"), 11);
             _dashEffect = SKPathEffect.CreateDash(new float[] { 4, 2 }, 0);
 
             if (_plotGrid != null)
@@ -137,34 +130,27 @@ namespace ƎPIDGRAPH.Views
             }
         }
 
-        // ==================== ДАННЫЕ И СДВИГ ВРЕМЕНИ ====================
+        // ==================== ДАННЫЕ ====================
         private void OnPlotDataChanged()
         {
-            var (sessions, tMinRaw, tMaxRaw) = _viewModel.GetPlotData();
+            var (sessions, _, _) = _viewModel.GetPlotData();
             if (sessions.Count == 0) return;
 
-            // Сдвигаем время каждой сессии так, чтобы глобальное начало стало 0
-            double minTimeUs = double.MaxValue;
-            double maxTimeUs = double.MinValue;
-
-            // Сначала найдём истинные min/max по всем сессиям
-            foreach (var s in sessions)
-            {
-                if (s.Times.Length == 0) continue;
-                double min = s.Times[0];
-                double max = s.Times[^1];
-                if (min < minTimeUs) minTimeUs = min;
-                if (max > maxTimeUs) maxTimeUs = max;
-            }
-
-            // Создаём новые сессии со сдвинутым временем
             _sessions = new List<SessionPlotData>(sessions.Count);
+            double globalMaxDurationSec = 0;
+
             foreach (var s in sessions)
             {
                 if (s.Times.Length == 0) continue;
+                double localMinUs = s.Times.Min();
+                double localMaxUs = s.Times.Max();
+                double durationSec = (localMaxUs - localMinUs) / 1_000_000.0;
+                if (durationSec > globalMaxDurationSec) globalMaxDurationSec = durationSec;
+
                 var shiftedTimes = new double[s.Times.Length];
                 for (int i = 0; i < s.Times.Length; i++)
-                    shiftedTimes[i] = s.Times[i] - minTimeUs;
+                    shiftedTimes[i] = s.Times[i] - localMinUs;
+
                 _sessions.Add(new SessionPlotData
                 {
                     Times = shiftedTimes,
@@ -174,9 +160,8 @@ namespace ƎPIDGRAPH.Views
             }
 
             _tMin = 0.0;
-            _tMax = (maxTimeUs - minTimeUs) / 1_000_000.0;
+            _tMax = globalMaxDurationSec > 0 ? globalMaxDurationSec : 1.0;
 
-            // Y-диапазон
             double vMin = double.MaxValue, vMax = double.MinValue;
             foreach (var s in _sessions)
             {
@@ -196,10 +181,8 @@ namespace ƎPIDGRAPH.Views
 
         private void ResetZoom()
         {
-            _zoomX = 1.0;
-            _zoomY = 1.0;
-            _panX = 0;
-            _panY = 0;
+            _zoomX = 1.0; _zoomY = 1.0;
+            _panX = 0; _panY = 0;
         }
 
         // ==================== РЕНДЕР ====================
@@ -232,13 +215,13 @@ namespace ƎPIDGRAPH.Views
                 {
                     var session = _sessions[i];
                     var color = SessionColors[i % SessionColors.Length];
-                    // SP — пунктир, Gyro — сплошная
                     DrawDataLine(canvas, width, height, session.Times, session.Setpoints,
                                  ScaleX, ScaleY, color, true);
                     DrawDataLine(canvas, width, height, session.Times, session.Gyros,
                                  ScaleX, ScaleY, color, false);
                 }
 
+                DrawLegend(canvas, width);
                 canvas.Flush();
             }
 
@@ -251,8 +234,8 @@ namespace ƎPIDGRAPH.Views
         {
             var linePaint = _gridPaint!;
             var labelPaint = _textPaint!;
+            var font = _textFont!;
 
-            // Горизонтальные линии и метки значений
             int yTicks = 8;
             double vStep = (_vMax - _vMin) / yTicks;
             for (int i = 0; i <= yTicks; i++)
@@ -262,15 +245,13 @@ namespace ƎPIDGRAPH.Views
                 if (y >= 0 && y <= h)
                 {
                     canvas.DrawLine(0, (float)y, (float)w, (float)y, linePaint);
-                    // Метка значения
                     string label = v.ToString("F0");
                     float textY = (float)y - 4;
-                    if (textY < 10) textY = (float)y + 14; // чтобы не уходило за верх
-                    canvas.DrawText(label, 2, textY, labelPaint);
+                    if (textY < 10) textY = (float)y + 14;
+                    canvas.DrawText(label, 2, textY, SKTextAlign.Left, font, labelPaint);
                 }
             }
 
-            // Вертикальные линии и метки времени
             int xTicks = 10;
             double tStep = (_tMax - _tMin) / xTicks;
             for (int i = 0; i <= xTicks; i++)
@@ -280,11 +261,10 @@ namespace ƎPIDGRAPH.Views
                 if (x >= 0 && x <= w)
                 {
                     canvas.DrawLine((float)x, 0, (float)x, (float)h, linePaint);
-                    // Метка времени
                     string label = t.ToString("F1") + "s";
                     float textX = (float)x + 2;
                     if (textX > w - 40) textX = (float)x - 40;
-                    canvas.DrawText(label, textX, (float)h - 4, labelPaint);
+                    canvas.DrawText(label, textX, (float)h - 4, SKTextAlign.Left, font, labelPaint);
                 }
             }
         }
@@ -294,11 +274,30 @@ namespace ƎPIDGRAPH.Views
         {
             var paint = _axisPaint!;
             double oy = sy(0);
-            if (oy >= 0 && oy <= h)
-                canvas.DrawLine(0, (float)oy, (float)w, (float)oy, paint);
+            if (oy >= 0 && oy <= h) canvas.DrawLine(0, (float)oy, (float)w, (float)oy, paint);
             double ox = sx(0);
-            if (ox >= 0 && ox <= w)
-                canvas.DrawLine((float)ox, 0, (float)ox, (float)h, paint);
+            if (ox >= 0 && ox <= w) canvas.DrawLine((float)ox, 0, (float)ox, (float)h, paint);
+        }
+
+        private void DrawLegend(SKCanvas canvas, double graphWidth)
+        {
+            if (_sessions is null || _sessions.Count <= 1) return;
+
+            var font = _textFont!;
+            var labelPaint = _textPaint!;
+            float x = 8, y = 8;
+            float boxSize = 10, gap = 4;
+
+            for (int i = 0; i < _sessions.Count; i++)
+            {
+                var color = SessionColors[i % SessionColors.Length];
+                using var fill = new SKPaint { Color = color, Style = SKPaintStyle.Fill };
+                canvas.DrawRect(x, y, boxSize, boxSize, fill);
+
+                string label = $"Сессия {i + 1}";
+                canvas.DrawText(label, x + boxSize + 4, y + boxSize - 2, SKTextAlign.Left, font, labelPaint);
+                y += boxSize + gap;
+            }
         }
 
         private void DrawDataLine(SKCanvas canvas, double w, double h,
@@ -308,7 +307,6 @@ namespace ƎPIDGRAPH.Views
         {
             if (timesUs.Length == 0) return;
 
-            // Видимый диапазон времени (в секундах)
             double tPerPixel = (_tMax - _tMin) / (w * _zoomX);
             double tStart = _tMin + (-_panX) / (w * _zoomX) * (_tMax - _tMin) - tPerPixel;
             double tEnd = _tMin + (w - _panX) / (w * _zoomX) * (_tMax - _tMin) + tPerPixel;
@@ -324,8 +322,7 @@ namespace ƎPIDGRAPH.Views
             if (endIdx < 0) endIdx = ~endIdx;
             endIdx = Math.Min(timesUs.Length - 1, endIdx + 1);
 
-            if (startIdx >= timesUs.Length || endIdx < 0 || startIdx > endIdx)
-                return;
+            if (startIdx >= timesUs.Length || endIdx < 0 || startIdx > endIdx) return;
 
             int visibleCount = endIdx - startIdx + 1;
             int targetPoints = (int)(w * Math.Max(_zoomX, 1.0));
@@ -345,15 +342,14 @@ namespace ƎPIDGRAPH.Views
             for (int i = startIdx; i <= endIdx; i += step)
             {
                 double t = timesUs[i] / 1_000_000.0;
-                double x = sx(t);
-                double y = sy(values[i]);
+                double x = sx(t), y = sy(values[i]);
                 if (first) { path.MoveTo((float)x, (float)y); first = false; }
                 else path.LineTo((float)x, (float)y);
             }
             canvas.DrawPath(path, paint);
         }
 
-        // ========== МЫШЬ (без изменений) ==========
+        // ==================== МЫШЬ ====================
         private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
         {
             if (_interactionCanvas is null || !_hasData) return;
@@ -379,8 +375,7 @@ namespace ƎPIDGRAPH.Views
                 double nzy = Math.Clamp(_zoomY * zoomDelta, MinZoom, MaxZoom);
                 _panX = mousePos.X - (mousePos.X - _panX) * (nzx / _zoomX);
                 _panY = mousePos.Y - (mousePos.Y - _panY) * (nzy / _zoomY);
-                _zoomX = nzx;
-                _zoomY = nzy;
+                _zoomX = nzx; _zoomY = nzy;
             }
 
             RenderToImage();
@@ -437,8 +432,7 @@ namespace ƎPIDGRAPH.Views
             {
                 double dx = mousePos.X - _lastMousePosition.X;
                 double dy = mousePos.Y - _lastMousePosition.Y;
-                _panX += dx;
-                _panY += dy;
+                _panX += dx; _panY += dy;
                 _lastMousePosition = mousePos;
                 RenderToImage();
                 return;
@@ -472,24 +466,16 @@ namespace ƎPIDGRAPH.Views
                         double nzx = Math.Clamp(cw / w, MinZoom, MaxZoom);
                         double nzy = Math.Clamp(ch / h, MinZoom, MaxZoom);
 
-                        _zoomX = nzx;
-                        _zoomY = nzy;
-                        _panX = -x * nzx;
-                        _panY = -y * nzy;
+                        _zoomX = nzx; _zoomY = nzy;
+                        _panX = -x * nzx; _panY = -y * nzy;
                     }
-                    else
-                    {
-                        ResetZoom();
-                    }
+                    else ResetZoom();
 
                     _zoomRectangle = null;
                     RenderToImage();
                 }
             }
-            else if (_isPanning)
-            {
-                _isPanning = false;
-            }
+            else if (_isPanning) _isPanning = false;
         }
 
         private void OnPointerExited(object? sender, PointerEventArgs e)
@@ -499,7 +485,7 @@ namespace ƎPIDGRAPH.Views
             if (_tooltipBorder != null) _tooltipBorder.IsVisible = false;
         }
 
-        // ==================== КРЕСТОВИНА ====================
+        // ==================== КРЕСТОВИНА (МУЛЬТИ-ЦВЕТ, 12 СЕССИЙ) ====================
         private void UpdateCrosshair(Point mousePos)
         {
             if (_crosshairX is null || _crosshairY is null || _tooltipBorder is null || _tooltipText is null) return;
@@ -528,45 +514,33 @@ namespace ƎPIDGRAPH.Views
 
             double timeAtCursor = _tMin + (cx - _panX) / (_zoomX * cw) * (_tMax - _tMin);
 
-            double bestSetpoint = 0, bestGyro = 0;
-            bool found = false;
-            foreach (var s in _sessions)
+            // Построение тултипа: каждая сессия на отдельной строке
+            var lines = new List<string> { $"Время: {timeAtCursor:F6} с" };
+
+            for (int i = 0; i < _sessions.Count; i++)
             {
-                if (s.Times.Length == 0) continue;
-                if (timeAtCursor >= s.Times[0] / 1e6 && timeAtCursor <= s.Times[^1] / 1e6)
+                var s = _sessions[i];
+                string colorTag = ColorShortNames[i % ColorShortNames.Length];
+
+                if (s.Times.Length > 0 &&
+                    FindClosestInSession(s, timeAtCursor, out double sp, out double gyro))
                 {
-                    found = FindClosestInSession(s, timeAtCursor, out bestSetpoint, out bestGyro);
-                    break;
+                    lines.Add($"[{colorTag}] Сессия {i + 1}  SP: {sp:G}  Gyro: {gyro:G}");
                 }
-            }
-            if (!found)
-            {
-                double minDist = double.MaxValue;
-                foreach (var s in _sessions)
+                else
                 {
-                    if (s.Times.Length == 0) continue;
-                    double dist = Math.Min(Math.Abs(s.Times[0] / 1e6 - timeAtCursor),
-                                           Math.Abs(s.Times[^1] / 1e6 - timeAtCursor));
-                    if (dist < minDist)
-                    {
-                        minDist = dist;
-                        found = FindClosestInSession(s, timeAtCursor, out bestSetpoint, out bestGyro);
-                    }
+                    lines.Add($"[{colorTag}] Сессия {i + 1}  —");
                 }
             }
 
-            string tooltip;
-            if (found)
-                tooltip = $"Время: {timeAtCursor:F2} с\nSP: {bestSetpoint:F1}\nGyro: {bestGyro:F1}";
-            else
-                tooltip = $"Время: {timeAtCursor:F2} с";
-
-            _tooltipText.Text = tooltip;
+            _tooltipText.Text = string.Join("\n", lines);
 
             double offset = 10;
             double tx = cx + offset, ty = cy + offset;
-            if (tx + 110 > cw) tx = cx - offset - 110;
-            if (ty + 45 > ch) ty = cy - offset - 45;
+            double estimatedWidth = 280;
+            double estimatedHeight = 20 + _sessions.Count * 20;
+            if (tx + estimatedWidth > cw) tx = cx - offset - estimatedWidth;
+            if (ty + estimatedHeight > ch) ty = cy - offset - estimatedHeight;
             Canvas.SetLeft(_tooltipBorder, tx);
             Canvas.SetTop(_tooltipBorder, ty);
             _tooltipBorder.IsVisible = true;
